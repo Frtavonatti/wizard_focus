@@ -1,13 +1,21 @@
 from fastapi import FastAPI
+from sqlalchemy import text
 
-app = FastAPI()
+from database import AsyncSessionLocal
+
+app = FastAPI(title="Wizard Focus API")
 
 
 @app.get("/")
-def main():
-    print("Hello from server!")
-    return "Hello from server!"
+async def root():
+    return {"message": "Wizard Focus API is running"}
 
 
-if __name__ == "__main__":
-    main()
+@app.get("/health")
+async def health_check():
+    try:
+        async with AsyncSessionLocal() as session:
+            await session.execute(text("SELECT 1"))
+        return {"status": "ok", "database": "connected"}
+    except Exception as e:
+        return {"status": "error", "database": str(e)}
