@@ -8,6 +8,17 @@ from database import Base
 
 
 class User(Base):
+    """
+    Core user account.
+
+    Supports two authentication strategies:
+    - Password-based: hashed_password is set, no OAuthAccount needed.
+    - OAuth-only: hashed_password is NULL, login is done via OAuthAccount providers.
+
+    A user owns all their data (sessions, stats, artifacts), deleting a user
+    cascades and removes everything associated with them.
+    """
+
     __tablename__ = "users"
 
     id = Column(UUID, primary_key=True, index=True, default=uuid4)

@@ -26,6 +26,17 @@ class ArtifactCategory(str, enum.Enum):
 
 
 class Artifact(Base):
+    """
+    A magical item earned by completing a focus session.
+
+    Each artifact is tied to both a user and the specific session that generated it.
+    Deleting a session cascades and removes its artifacts.
+    Deleting a user also cascades through sessions to artifacts.
+
+    - rarity and category are enforced at DB level via Enum constraints.
+    - awarded_at is set automatically at insertion time.
+    """
+
     __tablename__ = "artifacts"
 
     id = Column(UUID, primary_key=True, index=True, default=uuid4)

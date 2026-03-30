@@ -15,6 +15,18 @@ class SessionStatus(str, enum.Enum):
 
 
 class TimerSession(Base):
+    """
+    A single focus session started by a user.
+
+    - duration_minutes: the target time the user set.
+    - actual_minutes: real time focused. NULL if the session was abandoned before
+      any progress was recorded.
+    - completed_at: NULL for abandoned or interrupted sessions.
+    - status: enforced at DB level via SessionStatus enum.
+
+    Artifacts earned during a session are cascaded on delete.
+    """
+
     __tablename__ = "timer_sessions"
 
     id = Column(UUID, primary_key=True, index=True, default=uuid4)

@@ -7,6 +7,17 @@ from database import Base
 
 
 class Stats(Base):
+    """
+    Aggregated focus statistics for a user. One row per user (1:1).
+
+    Counters are always initialized to 0 and never NULL — both the ORM
+    (default) and the DB (server_default) enforce this for safety.
+
+    - current_strike: consecutive days with at least one completed session.
+    - longest_strike: all-time best streak.
+    - last_session_date: used to evaluate if the streak is still active.
+    """
+
     __tablename__ = "user_stats"
 
     id = Column(UUID, primary_key=True, index=True, default=uuid4)
