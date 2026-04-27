@@ -10,8 +10,10 @@ keywords = ["focus", "productivity", "wizard", "pomodoro", "fastapi"]
 dependencies = [
     "alembic>=1.18.4",
     "asyncpg>=0.31.0",
+    "bcrypt>=5.0.0",
     "fastapi[standard]>=0.135.2",
     "pydantic-settings>=2.13.1",
+    "python-jose[cryptography]>=3.5.0",
     "sqlalchemy[asyncio]>=2.0.48",
 ]
 
