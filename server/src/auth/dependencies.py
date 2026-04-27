@@ -10,11 +10,13 @@ from models.user import User
 
 _bearer = HTTPBearer()
 
-_UNAUTHORIZED = HTTPException(
-    status_code=status.HTTP_401_UNAUTHORIZED,
-    detail="Invalid or expired token",
-    headers={"WWW-Authenticate": "Bearer"},
-)
+
+def _unauthorized() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid or expired token",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
 
 
 async def get_current_user(
@@ -24,10 +26,10 @@ async def get_current_user(
     try:
         user_id = decode_access_token(credentials.credentials)
     except JWTError:
-        raise _UNAUTHORIZED
+        raise _unauthorized()
 
     user = await crud_users.get_by_id(db, user_id)
     if user is None:
-        raise _UNAUTHORIZED
+        raise _unauthorized()
 
     return user

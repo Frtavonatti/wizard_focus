@@ -32,12 +32,9 @@ async def db(engine):
     """Each test gets a transaction that is rolled back on teardown — no state leaks."""
     async with engine.connect() as conn:
         await conn.begin()
-        session = AsyncSession(bind=conn, expire_on_commit=False)
-        try:
+        async with AsyncSession(conn, expire_on_commit=False) as session:
             yield session
-        finally:
-            await session.close()
-            await conn.rollback()
+        await conn.rollback()
 
 
 @pytest_asyncio.fixture

@@ -1,20 +1,25 @@
 import asyncio
+import sys
 from logging.config import fileConfig
+from pathlib import Path
 
 from sqlalchemy.ext.asyncio import async_engine_from_config
 from sqlalchemy import pool
 
 from alembic import context
 
-from config import settings
-from database import Base
+# Ensure src/ is on the path so all app modules are importable by the CLI
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+
+from config import settings  # noqa: E402
+from database import Base  # noqa: E402
 
 # Import all models so Alembic can detect them for autogenerate
-import models.user  # noqa: F401
-import models.oauth_account  # noqa: F401
-import models.timer_sessions  # noqa: F401
-import models.user_stats  # noqa: F401
-import models.artifacts  # noqa: F401
+import models.user  # noqa: F401, E402
+import models.oauth_account  # noqa: F401, E402
+import models.timer_sessions  # noqa: F401, E402
+import models.user_stats  # noqa: F401, E402
+import models.artifacts  # noqa: F401, E402
 
 config = context.config
 

@@ -19,9 +19,14 @@ async def root():
 
 @app.get("/health")
 async def health_check():
+    from fastapi import Response
     try:
         async with AsyncSessionLocal() as session:
             await session.execute(text("SELECT 1"))
         return {"status": "ok", "database": "connected"}
-    except Exception as e:
-        return {"status": "error", "database": str(e)}
+    except Exception:
+        return Response(
+            content='{"status":"error","database":"unavailable"}',
+            status_code=503,
+            media_type="application/json",
+        )
