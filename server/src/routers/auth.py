@@ -68,3 +68,4 @@ async def logout():
     # Tokens are stateless JWTs — invalidation is client-side (discard tokens).
     # A server-side blocklist can be added in a future iteration if needed.
     return {"detail": "Logged out successfully"}
+
