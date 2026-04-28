@@ -7,7 +7,15 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth.jwt import create_access_token, create_refresh_token
-from auth.oauth import build_google_auth_url, exchange_code, get_google_user_info, verify_state
+from auth.oauth import (
+    build_github_auth_url,
+    build_google_auth_url,
+    exchange_google_code,
+    exchange_github_code,
+    get_github_user_info,
+    get_google_user_info,
+    verify_state,
+)
 from config import settings
 from crud import oauth_accounts as crud_oauth
 from crud import stats as crud_stats
@@ -58,7 +66,7 @@ async def google_callback(
     redirect_uri = str(request.url_for("google_callback"))
 
     try:
-        token_data = await exchange_code(code, redirect_uri)
+        token_data = await exchange_google_code(code, redirect_uri)
     except httpx.HTTPStatusError:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Failed to exchange code with Google")
 
@@ -73,19 +81,7 @@ async def google_callback(
     if not provider_user_id or not email:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Incomplete profile from Google")
 
-    # Find or create user + link OAuth account
-    oauth_account = await crud_oauth.get_by_provider(db, "google", provider_user_id)
-    if oauth_account:
-        user = await crud_users.get_by_id(db, oauth_account.user_id)
-    else:
-        # Link to an existing password-based account with the same email, or create new
-        user = await crud_users.get_by_email(db, email)
-        if not user:
-            username = await _unique_username(db, user_info)
-            user = await crud_users.create(db, email, username)
-            await crud_stats.create_for_user(db, user.id)
-        await crud_oauth.create(db, user.id, "google", provider_user_id)
-
+    user = await _find_or_create_user(db, "google", provider_user_id, email, user_info)
     await db.commit()
 
     access_token = create_access_token(user.id)
@@ -101,11 +97,12 @@ async def google_callback(
 
 
 async def _unique_username(db: AsyncSession, user_info: dict) -> str:
-    """Derive a unique username from a Google profile."""
+    """Derive a unique username from an OAuth profile."""
     base = re.sub(r"[^a-z0-9]", "", user_info.get("name", "").lower())
     if not base:
-        base = user_info.get("email", "user").split("@")[0]
-    base = base[:28]
+        base = user_info.get("login", user_info.get("email", "user").split("@")[0])
+        base = re.sub(r"[^a-z0-9]", "", base.lower())
+    base = base[:28] or "user"
     if not await crud_users.get_by_username(db, base):
         return base
     for i in range(1, 100):
@@ -113,3 +110,92 @@ async def _unique_username(db: AsyncSession, user_info: dict) -> str:
         if not await crud_users.get_by_username(db, candidate):
             return candidate
     return f"{base[:20]}{secrets.token_urlsafe(4)}"
+
+
+async def _find_or_create_user(db: AsyncSession, provider: str, provider_user_id: str, email: str, user_info: dict):
+    """Shared logic: find existing OAuth account, link, or create a new user."""
+    oauth_account = await crud_oauth.get_by_provider(db, provider, provider_user_id)
+    if oauth_account:
+        return await crud_users.get_by_id(db, oauth_account.user_id)
+
+    user = await crud_users.get_by_email(db, email)
+    if not user:
+        username = await _unique_username(db, user_info)
+        user = await crud_users.create(db, email, username)
+        await crud_stats.create_for_user(db, user.id)
+    await crud_oauth.create(db, user.id, provider, provider_user_id)
+    return user
+
+
+# ---------------------------------------------------------------------------
+# GitHub OAuth
+# ---------------------------------------------------------------------------
+
+
+@router.get("/github")
+async def github_login(request: Request) -> RedirectResponse:
+    redirect_uri = str(request.url_for("github_callback"))
+    auth_url, state_token = build_github_auth_url(redirect_uri)
+    response = RedirectResponse(auth_url)
+    response.set_cookie(
+        _OAUTH_STATE_COOKIE,
+        state_token,
+        max_age=600,
+        httponly=True,
+        samesite="lax",
+        secure=not settings.DEBUG,
+    )
+    return response
+
+
+@router.get("/github/callback", name="github_callback")
+async def github_callback(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+) -> RedirectResponse:
+    if error or not code or not state:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="OAuth error or missing parameters")
+
+    state_cookie = request.cookies.get(_OAUTH_STATE_COOKIE)
+    if not state_cookie:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Missing state cookie")
+
+    try:
+        verify_state(state, state_cookie)
+    except ValueError:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Invalid OAuth state")
+
+    redirect_uri = str(request.url_for("github_callback"))
+
+    try:
+        token_data = await exchange_github_code(code, redirect_uri)
+    except httpx.HTTPStatusError:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Failed to exchange code with GitHub")
+
+    try:
+        user_info = await get_github_user_info(token_data["access_token"])
+    except httpx.HTTPStatusError:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Failed to fetch user info from GitHub")
+
+    provider_user_id: str = str(user_info.get("id", ""))
+    email: str | None = user_info.get("email")
+
+    if not provider_user_id or not email:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Incomplete profile from GitHub")
+
+    user = await _find_or_create_user(db, "github", provider_user_id, email, user_info)
+    await db.commit()
+
+    access_token = create_access_token(user.id)
+    refresh_token = create_refresh_token(user.id)
+
+    frontend_redirect = (
+        f"{settings.FRONTEND_URL}/auth/callback"
+        f"?access_token={access_token}&refresh_token={refresh_token}"
+    )
+    response = RedirectResponse(frontend_redirect)
+    response.delete_cookie(_OAUTH_STATE_COOKIE)
+    return response

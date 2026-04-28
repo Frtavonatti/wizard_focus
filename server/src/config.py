@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""
 
+    # OAuth — GitHub
+    GITHUB_CLIENT_ID: str = ""
+    GITHUB_CLIENT_SECRET: str = ""
+
     # Frontend — used for OAuth redirect after callback
     FRONTEND_URL: str = "http://localhost:5173"
 
