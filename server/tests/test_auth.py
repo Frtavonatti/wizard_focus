@@ -1,7 +1,20 @@
-import pytest
-from httpx import AsyncClient
+from datetime import datetime, timedelta, timezone
 
+from httpx import AsyncClient
+from jose import jwt
+
+from config import settings
 from tests.conftest import VALID_USER, auth_headers, register_user
+
+
+def _forge_token(token_type: str, sub: str) -> str:
+    """Create a validly-signed token with an arbitrary sub value."""
+    payload = {
+        "sub": sub,
+        "type": token_type,
+        "exp": datetime.now(timezone.utc) + timedelta(minutes=5),
+    }
+    return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 
 
 class TestRegister:
@@ -72,6 +85,11 @@ class TestLogin:
         )
         assert r.status_code == 401
 
+    async def test_non_uuid_sub_access_token_is_401(self, client: AsyncClient):
+        token = _forge_token("access", "not-a-uuid")
+        r = await client.get("/api/users/me", headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 401
+
 
 class TestRefresh:
     async def test_valid_refresh_returns_new_tokens(self, client: AsyncClient):
@@ -98,6 +116,11 @@ class TestRefresh:
             "/api/auth/refresh",
             json={"refresh_token": data["access_token"]},
         )
+        assert r.status_code == 401
+
+    async def test_non_uuid_sub_refresh_token_is_401(self, client: AsyncClient):
+        token = _forge_token("refresh", "not-a-uuid")
+        r = await client.post("/api/auth/refresh", json={"refresh_token": token})
         assert r.status_code == 401
 
 

@@ -36,7 +36,10 @@ def decode_access_token(token: str) -> UUID:
     payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
     if payload.get("type") != _ACCESS:
         raise JWTError("Invalid token type")
-    return UUID(payload["sub"])
+    try:
+        return UUID(payload["sub"])
+    except (ValueError, KeyError) as exc:
+        raise JWTError("Invalid subject claim") from exc
 
 
 def decode_refresh_token(token: str) -> UUID:
@@ -44,4 +47,7 @@ def decode_refresh_token(token: str) -> UUID:
     payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
     if payload.get("type") != _REFRESH:
         raise JWTError("Invalid token type")
-    return UUID(payload["sub"])
+    try:
+        return UUID(payload["sub"])
+    except (ValueError, KeyError) as exc:
+        raise JWTError("Invalid subject claim") from exc

@@ -1,4 +1,3 @@
-import pytest
 from httpx import AsyncClient
 
 from tests.conftest import VALID_USER, auth_headers, register_user
@@ -83,6 +82,23 @@ class TestUpdateMe:
     async def test_no_token_is_401(self, client: AsyncClient):
         r = await client.patch("/api/users/me", json={"username": "x"})
         assert r.status_code == 401
+
+    async def test_null_email_is_noop(self, client: AsyncClient):
+        headers = await auth_headers(client)
+        r = await client.patch("/api/users/me", json={"email": None}, headers=headers)
+        assert r.status_code == 200
+        assert r.json()["email"] == VALID_USER["email"]
+
+    async def test_null_username_is_noop(self, client: AsyncClient):
+        headers = await auth_headers(client)
+        r = await client.patch("/api/users/me", json={"username": None}, headers=headers)
+        assert r.status_code == 200
+        assert r.json()["username"] == VALID_USER["username"]
+
+    async def test_null_password_is_noop(self, client: AsyncClient):
+        headers = await auth_headers(client)
+        r = await client.patch("/api/users/me", json={"password": None}, headers=headers)
+        assert r.status_code == 200
 
 
 class TestDeleteMe:
