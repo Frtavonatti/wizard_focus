@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 from httpx import AsyncClient
 from jose import jwt
 
-from config import settings
+from config import get_settings
 from tests.conftest import VALID_USER, auth_headers, register_user
 
 
@@ -14,7 +14,8 @@ def _forge_token(token_type: str, sub: str) -> str:
         "type": token_type,
         "exp": datetime.now(timezone.utc) + timedelta(minutes=5),
     }
-    return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
+    s = get_settings()
+    return jwt.encode(payload, s.SECRET_KEY, algorithm=s.JWT_ALGORITHM)
 
 
 class TestRegister:

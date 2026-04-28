@@ -1,3 +1,10 @@
+import os
+
+# Set required env vars before any app module is imported so Settings() doesn't
+# raise a ValidationError on a clean checkout that has no .env file.
+os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
+os.environ.setdefault("SECRET_KEY", "test-secret-key-00000000000000000000000000000000")
+
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine

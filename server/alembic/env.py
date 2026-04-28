@@ -11,7 +11,7 @@ from alembic import context
 # Ensure src/ is on the path so all app modules are importable by the CLI
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from config import settings  # noqa: E402
+from config import get_settings  # noqa: E402
 from database import Base  # noqa: E402
 
 # Import all models so Alembic can detect them for autogenerate
@@ -27,7 +27,7 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 # Override sqlalchemy.url from .env via pydantic-settings
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+config.set_main_option("sqlalchemy.url", get_settings().DATABASE_URL)
 
 target_metadata = Base.metadata
 

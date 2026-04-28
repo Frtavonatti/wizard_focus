@@ -1,4 +1,6 @@
+from functools import lru_cache
 from typing import List
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -21,4 +23,7 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
 
-settings = Settings()
+@lru_cache
+def get_settings() -> Settings:
+    """Return a cached Settings instance. Call get_settings.cache_clear() in tests to reset."""
+    return Settings()
