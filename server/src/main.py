@@ -1,16 +1,15 @@
 from fastapi import FastAPI
 from sqlalchemy import text
 
-from config import get_settings
+from config import settings
 from database import AsyncSessionLocal
 from routers import auth, stats, users
 
 app = FastAPI(title="Wizard Focus API")
 
-_settings = get_settings()
-app.include_router(auth.router, prefix=_settings.API_PREFIX)
-app.include_router(users.router, prefix=_settings.API_PREFIX)
-app.include_router(stats.router, prefix=_settings.API_PREFIX)
+app.include_router(auth.router, prefix=settings.API_PREFIX)
+app.include_router(users.router, prefix=settings.API_PREFIX)
+app.include_router(stats.router, prefix=settings.API_PREFIX)
 
 
 @app.get("/")
