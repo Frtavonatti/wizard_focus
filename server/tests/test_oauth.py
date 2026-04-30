@@ -7,7 +7,7 @@ from httpx import AsyncClient
 from jose import jwt
 
 from config import settings
-from tests.conftest import VALID_USER, register_user
+from tests.conftest import VALID_USER
 
 _MOCK_GOOGLE_TOKEN_RESPONSE = {"access_token": "google-access-token", "token_type": "Bearer"}
 _MOCK_USER_INFO = {
