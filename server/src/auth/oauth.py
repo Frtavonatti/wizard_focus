@@ -156,9 +156,9 @@ async def get_github_user_info(access_token: str) -> dict[str, Any]:
         user = r.json()
 
         if not user.get("email"):
-            re = await client.get(_GITHUB_EMAILS_URL, headers=headers)
-            re.raise_for_status()
-            for entry in re.json():
+            emails_resp = await client.get(_GITHUB_EMAILS_URL, headers=headers)
+            emails_resp.raise_for_status()
+            for entry in emails_resp.json():
                 if entry.get("primary") and entry.get("verified"):
                     user["email"] = entry["email"]
                     break
