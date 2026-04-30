@@ -1,5 +1,6 @@
 import re
 import secrets
+from enum import Enum
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -27,10 +28,18 @@ router = APIRouter(prefix="/auth", tags=["oauth"])
 _OAUTH_STATE_COOKIE = "oauth_state"
 
 
-@router.get("/google")
-async def google_login(request: Request) -> RedirectResponse:
-    redirect_uri = str(request.url_for("google_callback"))
-    auth_url, state_token = build_google_auth_url(redirect_uri)
+class OAuthProvider(str, Enum):
+    google = "google"
+    github = "github"
+
+
+@router.get("/{provider}")
+async def oauth_login(provider: OAuthProvider, request: Request) -> RedirectResponse:
+    redirect_uri = str(request.url_for("oauth_callback", provider=provider.value))
+    if provider == OAuthProvider.google:
+        auth_url, state_token = build_google_auth_url(redirect_uri)
+    else:
+        auth_url, state_token = build_github_auth_url(redirect_uri)
     response = RedirectResponse(auth_url)
     response.set_cookie(
         _OAUTH_STATE_COOKIE,
@@ -43,8 +52,9 @@ async def google_login(request: Request) -> RedirectResponse:
     return response
 
 
-@router.get("/google/callback", name="google_callback")
-async def google_callback(
+@router.get("/{provider}/callback", name="oauth_callback")
+async def oauth_callback(
+    provider: OAuthProvider,
     request: Request,
     db: AsyncSession = Depends(get_db),
     code: str | None = None,
@@ -63,25 +73,42 @@ async def google_callback(
     except ValueError:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Invalid OAuth state")
 
-    redirect_uri = str(request.url_for("google_callback"))
+    redirect_uri = str(request.url_for("oauth_callback", provider=provider.value))
 
-    try:
-        token_data = await exchange_google_code(code, redirect_uri)
-    except httpx.HTTPStatusError:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Failed to exchange code with Google")
+    if provider == OAuthProvider.google:
+        try:
+            token_data = await exchange_google_code(code, redirect_uri)
+        except httpx.HTTPStatusError:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Failed to exchange code with Google")
 
-    try:
-        user_info = await get_google_user_info(token_data["access_token"])
-    except httpx.HTTPStatusError:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Failed to fetch user info from Google")
+        try:
+            user_info = await get_google_user_info(token_data["access_token"])
+        except httpx.HTTPStatusError:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Failed to fetch user info from Google")
 
-    provider_user_id: str = user_info.get("sub", "")
+        provider_user_id: str = user_info.get("sub", "")
+
+    else:  # github
+        try:
+            token_data = await exchange_github_code(code, redirect_uri)
+        except httpx.HTTPStatusError:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Failed to exchange code with GitHub")
+
+        try:
+            user_info = await get_github_user_info(token_data["access_token"])
+        except httpx.HTTPStatusError:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Failed to fetch user info from GitHub")
+
+        provider_user_id = str(user_info.get("id", ""))
+
     email: str | None = user_info.get("email")
-
     if not provider_user_id or not email:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Incomplete profile from Google")
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail=f"Incomplete profile from {provider.value.title()}",
+        )
 
-    user = await _find_or_create_user(db, "google", provider_user_id, email, user_info)
+    user = await _find_or_create_user(db, provider.value, provider_user_id, email, user_info)
     await db.commit()
 
     access_token = create_access_token(user.id)
@@ -97,7 +124,6 @@ async def google_callback(
 
 
 async def _unique_username(db: AsyncSession, user_info: dict) -> str:
-    """Derive a unique username from an OAuth profile."""
     base = re.sub(r"[^a-z0-9]", "", user_info.get("name", "").lower())
     if not base:
         base = user_info.get("login", user_info.get("email", "user").split("@")[0])
@@ -113,7 +139,6 @@ async def _unique_username(db: AsyncSession, user_info: dict) -> str:
 
 
 async def _find_or_create_user(db: AsyncSession, provider: str, provider_user_id: str, email: str, user_info: dict):
-    """Shared logic: find existing OAuth account, link, or create a new user."""
     oauth_account = await crud_oauth.get_by_provider(db, provider, provider_user_id)
     if oauth_account:
         return await crud_users.get_by_id(db, oauth_account.user_id)
@@ -125,77 +150,3 @@ async def _find_or_create_user(db: AsyncSession, provider: str, provider_user_id
         await crud_stats.create_for_user(db, user.id)
     await crud_oauth.create(db, user.id, provider, provider_user_id)
     return user
-
-
-# ---------------------------------------------------------------------------
-# GitHub OAuth
-# ---------------------------------------------------------------------------
-
-
-@router.get("/github")
-async def github_login(request: Request) -> RedirectResponse:
-    redirect_uri = str(request.url_for("github_callback"))
-    auth_url, state_token = build_github_auth_url(redirect_uri)
-    response = RedirectResponse(auth_url)
-    response.set_cookie(
-        _OAUTH_STATE_COOKIE,
-        state_token,
-        max_age=600,
-        httponly=True,
-        samesite="lax",
-        secure=not settings.DEBUG,
-    )
-    return response
-
-
-@router.get("/github/callback", name="github_callback")
-async def github_callback(
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-    code: str | None = None,
-    state: str | None = None,
-    error: str | None = None,
-) -> RedirectResponse:
-    if error or not code or not state:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="OAuth error or missing parameters")
-
-    state_cookie = request.cookies.get(_OAUTH_STATE_COOKIE)
-    if not state_cookie:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Missing state cookie")
-
-    try:
-        verify_state(state, state_cookie)
-    except ValueError:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Invalid OAuth state")
-
-    redirect_uri = str(request.url_for("github_callback"))
-
-    try:
-        token_data = await exchange_github_code(code, redirect_uri)
-    except httpx.HTTPStatusError:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Failed to exchange code with GitHub")
-
-    try:
-        user_info = await get_github_user_info(token_data["access_token"])
-    except httpx.HTTPStatusError:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Failed to fetch user info from GitHub")
-
-    provider_user_id: str = str(user_info.get("id", ""))
-    email: str | None = user_info.get("email")
-
-    if not provider_user_id or not email:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Incomplete profile from GitHub")
-
-    user = await _find_or_create_user(db, "github", provider_user_id, email, user_info)
-    await db.commit()
-
-    access_token = create_access_token(user.id)
-    refresh_token = create_refresh_token(user.id)
-
-    frontend_redirect = (
-        f"{settings.FRONTEND_URL}/auth/callback"
-        f"?access_token={access_token}&refresh_token={refresh_token}"
-    )
-    response = RedirectResponse(frontend_redirect)
-    response.delete_cookie(_OAUTH_STATE_COOKIE)
-    return response

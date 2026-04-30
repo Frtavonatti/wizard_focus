@@ -38,8 +38,9 @@ def _make_state_cookie(state: str) -> str:
     )
 
 
-async def _do_callback(
+async def _do_oauth_callback(
     client: AsyncClient,
+    provider: str,
     state: str,
     code: str = "auth-code",
     state_cookie: str | None = None,
@@ -47,21 +48,7 @@ async def _do_callback(
     cookie = state_cookie if state_cookie is not None else _make_state_cookie(state)
     client.cookies.set("oauth_state", cookie)
     return await client.get(
-        f"/api/auth/google/callback?code={code}&state={state}",
-        follow_redirects=False,
-    )
-
-
-async def _do_github_callback(
-    client: AsyncClient,
-    state: str,
-    code: str = "auth-code",
-    state_cookie: str | None = None,
-) -> httpx.Response:
-    cookie = state_cookie if state_cookie is not None else _make_state_cookie(state)
-    client.cookies.set("oauth_state", cookie)
-    return await client.get(
-        f"/api/auth/github/callback?code={code}&state={state}",
+        f"/api/auth/{provider}/callback?code={code}&state={state}",
         follow_redirects=False,
     )
 
@@ -89,6 +76,16 @@ class TestGoogleLogin:
         assert "httponly" in set_cookie.lower()
 
 
+class TestUnknownProvider:
+    async def test_unknown_provider_login_is_422(self, client: AsyncClient):
+        r = await client.get("/api/auth/twitter", follow_redirects=False)
+        assert r.status_code == 422
+
+    async def test_unknown_provider_callback_is_422(self, client: AsyncClient):
+        r = await client.get("/api/auth/twitter/callback?code=x&state=y", follow_redirects=False)
+        assert r.status_code == 422
+
+
 class TestGoogleCallback:
     async def test_new_user_created_and_redirected_with_tokens(self, client: AsyncClient):
         state = "some-state-value"
@@ -97,7 +94,7 @@ class TestGoogleCallback:
         ):
             mp.setattr("routers.oauth.exchange_google_code", AsyncMock(return_value=_MOCK_GOOGLE_TOKEN_RESPONSE))
             mp.setattr("routers.oauth.get_google_user_info", AsyncMock(return_value=_MOCK_USER_INFO))
-            r = await _do_callback(client, state)
+            r = await _do_oauth_callback(client, "google", state)
 
         assert r.status_code in (302, 307)
         location = r.headers["location"]
@@ -112,8 +109,8 @@ class TestGoogleCallback:
         ):
             mp.setattr("routers.oauth.exchange_google_code", AsyncMock(return_value=_MOCK_GOOGLE_TOKEN_RESPONSE))
             mp.setattr("routers.oauth.get_google_user_info", AsyncMock(return_value=_MOCK_USER_INFO))
-            r1 = await _do_callback(client, state, code="code-first")
-            r2 = await _do_callback(client, state, code="code-second")
+            r1 = await _do_oauth_callback(client, "google", state, code="code-first")
+            r2 = await _do_oauth_callback(client, "google", state, code="code-second")
 
         assert r1.status_code in (302, 307)
         assert r2.status_code in (302, 307)
@@ -127,7 +124,7 @@ class TestGoogleCallback:
         with pytest.MonkeyPatch().context() as mp:
             mp.setattr("routers.oauth.exchange_google_code", AsyncMock(return_value=_MOCK_GOOGLE_TOKEN_RESPONSE))
             mp.setattr("routers.oauth.get_google_user_info", AsyncMock(return_value=_MOCK_USER_INFO))
-            r = await _do_callback(client, state)
+            r = await _do_oauth_callback(client, "google", state)
 
         assert r.status_code in (302, 307)
         assert "access_token=" in r.headers["location"]
@@ -159,7 +156,7 @@ class TestGoogleCallback:
         )
         with pytest.MonkeyPatch().context() as mp:
             mp.setattr("routers.oauth.exchange_google_code", AsyncMock(side_effect=mock_error))
-            r = await _do_callback(client, state)
+            r = await _do_oauth_callback(client, "google", state)
         assert r.status_code == 400
 
     async def test_google_userinfo_error_is_400(self, client: AsyncClient):
@@ -170,7 +167,7 @@ class TestGoogleCallback:
         with pytest.MonkeyPatch().context() as mp:
             mp.setattr("routers.oauth.exchange_google_code", AsyncMock(return_value=_MOCK_GOOGLE_TOKEN_RESPONSE))
             mp.setattr("routers.oauth.get_google_user_info", AsyncMock(side_effect=mock_error))
-            r = await _do_callback(client, state)
+            r = await _do_oauth_callback(client, "google", state)
         assert r.status_code == 400
 
     async def test_oauth_error_param_is_400(self, client: AsyncClient):
@@ -191,7 +188,7 @@ class TestGoogleCallback:
                 "routers.oauth.get_google_user_info",
                 AsyncMock(return_value=user_info_no_email),
             )
-            r = await _do_callback(client, state)
+            r = await _do_oauth_callback(client, "google", state)
         assert r.status_code == 400
 
 
@@ -214,7 +211,7 @@ class TestGithubCallback:
         with pytest.MonkeyPatch().context() as mp:
             mp.setattr("routers.oauth.exchange_github_code", AsyncMock(return_value=_MOCK_GITHUB_TOKEN_RESPONSE))
             mp.setattr("routers.oauth.get_github_user_info", AsyncMock(return_value=_MOCK_GITHUB_USER_INFO))
-            r = await _do_github_callback(client, state)
+            r = await _do_oauth_callback(client, "github", state)
 
         assert r.status_code in (302, 307)
         location = r.headers["location"]
@@ -226,8 +223,8 @@ class TestGithubCallback:
         with pytest.MonkeyPatch().context() as mp:
             mp.setattr("routers.oauth.exchange_github_code", AsyncMock(return_value=_MOCK_GITHUB_TOKEN_RESPONSE))
             mp.setattr("routers.oauth.get_github_user_info", AsyncMock(return_value=_MOCK_GITHUB_USER_INFO))
-            r1 = await _do_github_callback(client, state, code="code-first")
-            r2 = await _do_github_callback(client, state, code="code-second")
+            r1 = await _do_oauth_callback(client, "github", state, code="code-first")
+            r2 = await _do_oauth_callback(client, "github", state, code="code-second")
 
         assert r1.status_code in (302, 307)
         assert r2.status_code in (302, 307)
@@ -241,7 +238,7 @@ class TestGithubCallback:
         with pytest.MonkeyPatch().context() as mp:
             mp.setattr("routers.oauth.exchange_github_code", AsyncMock(return_value=_MOCK_GITHUB_TOKEN_RESPONSE))
             mp.setattr("routers.oauth.get_github_user_info", AsyncMock(return_value=_MOCK_GITHUB_USER_INFO))
-            r = await _do_github_callback(client, state)
+            r = await _do_oauth_callback(client, "github", state)
 
         assert r.status_code in (302, 307)
         assert "access_token=" in r.headers["location"]
@@ -267,7 +264,7 @@ class TestGithubCallback:
         )
         with pytest.MonkeyPatch().context() as mp:
             mp.setattr("routers.oauth.exchange_github_code", AsyncMock(side_effect=mock_error))
-            r = await _do_github_callback(client, state)
+            r = await _do_oauth_callback(client, "github", state)
         assert r.status_code == 400
 
     async def test_missing_email_in_userinfo_is_400(self, client: AsyncClient):
@@ -276,5 +273,5 @@ class TestGithubCallback:
         with pytest.MonkeyPatch().context() as mp:
             mp.setattr("routers.oauth.exchange_github_code", AsyncMock(return_value=_MOCK_GITHUB_TOKEN_RESPONSE))
             mp.setattr("routers.oauth.get_github_user_info", AsyncMock(return_value=user_info_no_email))
-            r = await _do_github_callback(client, state)
+            r = await _do_oauth_callback(client, "github", state)
         assert r.status_code == 400
