@@ -7,6 +7,7 @@ from config import settings
 
 _ACCESS = "access"
 _REFRESH = "refresh"
+_EXCHANGE = "exchange"
 
 
 def _make_token(subject: UUID, token_type: str, expires_delta: timedelta) -> str:
@@ -31,6 +32,11 @@ def create_refresh_token(user_id: UUID) -> str:
     )
 
 
+def create_exchange_code(user_id: UUID) -> str:
+    """Short-lived (60s) one-time-use token for the OAuth callback redirect."""
+    return _make_token(user_id, _EXCHANGE, timedelta(seconds=60))
+
+
 def decode_access_token(token: str) -> UUID:
     """Decode and validate an access token. Raises JWTError on any failure."""
     payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
@@ -46,6 +52,17 @@ def decode_refresh_token(token: str) -> UUID:
     """Decode and validate a refresh token. Raises JWTError on any failure."""
     payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
     if payload.get("type") != _REFRESH:
+        raise JWTError("Invalid token type")
+    try:
+        return UUID(payload["sub"])
+    except (ValueError, KeyError) as exc:
+        raise JWTError("Invalid subject claim") from exc
+
+
+def decode_exchange_code(token: str) -> UUID:
+    """Decode and validate an OAuth exchange code. Raises JWTError on any failure."""
+    payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+    if payload.get("type") != _EXCHANGE:
         raise JWTError("Invalid token type")
     try:
         return UUID(payload["sub"])
