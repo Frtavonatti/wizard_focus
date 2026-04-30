@@ -7,7 +7,7 @@ from httpx import AsyncClient
 from jose import jwt
 
 from config import settings
-from tests.conftest import VALID_USER
+from tests.conftest import VALID_USER, register_user
 
 _MOCK_GOOGLE_TOKEN_RESPONSE = {"access_token": "google-access-token", "token_type": "Bearer"}
 _MOCK_USER_INFO = {
@@ -57,19 +57,15 @@ async def _do_oauth_callback(
 # Tests
 # ---------------------------------------------------------------------------
 
-async def register_user(client: AsyncClient, payload: dict = VALID_USER) -> dict:
-    """Register a user and return the full JSON response."""
-    r = await client.post("/api/auth/register", json=payload)
-    assert r.status_code == 201, r.text
-    return r.json()
-
 class TestGoogleLogin:
-    async def test_redirects_to_google(self, client: AsyncClient):
+    async def test_redirects_to_google(self, client: AsyncClient, monkeypatch):
+        monkeypatch.setattr(settings, "GOOGLE_CLIENT_ID", "test-google-client-id")
         r = await client.get("/api/auth/google", follow_redirects=False)
         assert r.status_code in (302, 307)
         assert "accounts.google.com" in r.headers["location"]
 
-    async def test_sets_httponly_state_cookie(self, client: AsyncClient):
+    async def test_sets_httponly_state_cookie(self, client: AsyncClient, monkeypatch):
+        monkeypatch.setattr(settings, "GOOGLE_CLIENT_ID", "test-google-client-id")
         r = await client.get("/api/auth/google", follow_redirects=False)
         set_cookie = r.headers.get("set-cookie", "")
         assert "oauth_state" in set_cookie
@@ -98,8 +94,9 @@ class TestGoogleCallback:
 
         assert r.status_code in (302, 307)
         location = r.headers["location"]
-        assert "access_token=" in location
-        assert "refresh_token=" in location
+        assert "code=" in location
+        assert "access_token=" not in location
+        assert "refresh_token=" not in location
 
     async def test_existing_oauth_user_reused(self, client: AsyncClient):
         """Second login with same Google account links to the same user."""
@@ -127,7 +124,7 @@ class TestGoogleCallback:
             r = await _do_oauth_callback(client, "google", state)
 
         assert r.status_code in (302, 307)
-        assert "access_token=" in r.headers["location"]
+        assert "code=" in r.headers["location"]
 
     async def test_missing_code_is_400(self, client: AsyncClient):
         state = "some-state-value"
@@ -193,12 +190,14 @@ class TestGoogleCallback:
 
 
 class TestGithubLogin:
-    async def test_redirects_to_github(self, client: AsyncClient):
+    async def test_redirects_to_github(self, client: AsyncClient, monkeypatch):
+        monkeypatch.setattr(settings, "GITHUB_CLIENT_ID", "test-github-client-id")
         r = await client.get("/api/auth/github", follow_redirects=False)
         assert r.status_code in (302, 307)
         assert "github.com" in r.headers["location"]
 
-    async def test_sets_httponly_state_cookie(self, client: AsyncClient):
+    async def test_sets_httponly_state_cookie(self, client: AsyncClient, monkeypatch):
+        monkeypatch.setattr(settings, "GITHUB_CLIENT_ID", "test-github-client-id")
         r = await client.get("/api/auth/github", follow_redirects=False)
         set_cookie = r.headers.get("set-cookie", "")
         assert "oauth_state" in set_cookie
@@ -215,8 +214,9 @@ class TestGithubCallback:
 
         assert r.status_code in (302, 307)
         location = r.headers["location"]
-        assert "access_token=" in location
-        assert "refresh_token=" in location
+        assert "code=" in location
+        assert "access_token=" not in location
+        assert "refresh_token=" not in location
 
     async def test_existing_oauth_user_reused(self, client: AsyncClient):
         state = "some-state-value"
@@ -231,8 +231,7 @@ class TestGithubCallback:
 
     async def test_existing_password_account_gets_linked(self, client: AsyncClient):
         existing = {**VALID_USER, "email": _MOCK_GITHUB_USER_INFO["email"]}
-        from tests.conftest import register_user as _register
-        await _register(client, existing)
+        await register_user(client, existing)
 
         state = "some-state-value"
         with pytest.MonkeyPatch().context() as mp:
@@ -241,7 +240,7 @@ class TestGithubCallback:
             r = await _do_oauth_callback(client, "github", state)
 
         assert r.status_code in (302, 307)
-        assert "access_token=" in r.headers["location"]
+        assert "code=" in r.headers["location"]
 
     async def test_missing_state_cookie_is_400(self, client: AsyncClient):
         r = await client.get(
@@ -274,4 +273,39 @@ class TestGithubCallback:
             mp.setattr("routers.oauth.exchange_github_code", AsyncMock(return_value=_MOCK_GITHUB_TOKEN_RESPONSE))
             mp.setattr("routers.oauth.get_github_user_info", AsyncMock(return_value=user_info_no_email))
             r = await _do_oauth_callback(client, "github", state)
+        assert r.status_code == 400
+
+
+class TestTokenExchange:
+    async def test_valid_code_returns_tokens(self, client: AsyncClient):
+        state = "some-state-value"
+        with pytest.MonkeyPatch().context() as mp:
+            mp.setattr("routers.oauth.exchange_google_code", AsyncMock(return_value=_MOCK_GOOGLE_TOKEN_RESPONSE))
+            mp.setattr("routers.oauth.get_google_user_info", AsyncMock(return_value=_MOCK_USER_INFO))
+            r = await _do_oauth_callback(client, "google", state)
+
+        assert r.status_code in (302, 307)
+        code = r.headers["location"].split("code=")[1]
+
+        r2 = await client.post("/api/auth/token/exchange", json={"code": code})
+        assert r2.status_code == 200
+        data = r2.json()
+        assert "access_token" in data
+        assert "refresh_token" in data
+        assert data["token_type"] == "bearer"
+
+    async def test_invalid_code_is_400(self, client: AsyncClient):
+        r = await client.post("/api/auth/token/exchange", json={"code": "not-a-valid-token"})
+        assert r.status_code == 400
+
+    async def test_wrong_token_type_is_400(self, client: AsyncClient):
+        from datetime import datetime, timedelta, timezone
+        from jose import jwt as jose_jwt
+
+        wrong_type_token = jose_jwt.encode(
+            {"sub": "00000000-0000-0000-0000-000000000001", "type": "access", "exp": datetime.now(timezone.utc) + timedelta(minutes=1)},
+            settings.SECRET_KEY,
+            algorithm=settings.JWT_ALGORITHM,
+        )
+        r = await client.post("/api/auth/token/exchange", json={"code": wrong_type_token})
         assert r.status_code == 400

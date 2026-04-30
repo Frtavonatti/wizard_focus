@@ -7,7 +7,13 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from auth.jwt import create_access_token, create_refresh_token
+from auth.jwt import (
+    create_access_token,
+    create_exchange_code,
+    create_refresh_token,
+    decode_exchange_code,
+)
+from jose import JWTError
 from auth.oauth import (
     build_github_auth_url,
     build_google_auth_url,
@@ -22,6 +28,7 @@ from crud import oauth_accounts as crud_oauth
 from crud import stats as crud_stats
 from crud import users as crud_users
 from database import get_db
+from schemas.token import ExchangeCodeRequest, TokenResponse
 
 router = APIRouter(prefix="/auth", tags=["oauth"])
 
@@ -35,10 +42,15 @@ class OAuthProvider(str, Enum):
 
 @router.get("/{provider}")
 async def oauth_login(provider: OAuthProvider, request: Request) -> RedirectResponse:
-    redirect_uri = str(request.url_for("oauth_callback", provider=provider.value))
     if provider == OAuthProvider.google:
+        if not settings.GOOGLE_CLIENT_ID:
+            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail="Google OAuth is not configured")
+        redirect_uri = str(request.url_for("oauth_callback", provider=provider.value))
         auth_url, state_token = build_google_auth_url(redirect_uri)
     else:
+        if not settings.GITHUB_CLIENT_ID:
+            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail="GitHub OAuth is not configured")
+        redirect_uri = str(request.url_for("oauth_callback", provider=provider.value))
         auth_url, state_token = build_github_auth_url(redirect_uri)
     response = RedirectResponse(auth_url)
     response.set_cookie(
@@ -47,9 +59,31 @@ async def oauth_login(provider: OAuthProvider, request: Request) -> RedirectResp
         max_age=600,
         httponly=True,
         samesite="lax",
-        secure=not settings.DEBUG,
+        secure=request.url.scheme == "https",
     )
     return response
+
+
+async def _fetch_provider_data(
+    provider: OAuthProvider, code: str, redirect_uri: str
+) -> tuple[str, dict]:
+    """Exchange auth code for user info. Returns (provider_user_id, user_info).
+    Raises HTTPException 400 on any provider-side failure.
+    """
+    try:
+        if provider == OAuthProvider.google:
+            token_data = await exchange_google_code(code, redirect_uri)
+            user_info = await get_google_user_info(token_data["access_token"])
+            return user_info.get("sub", ""), user_info
+        else:
+            token_data = await exchange_github_code(code, redirect_uri)
+            user_info = await get_github_user_info(token_data["access_token"])
+            return str(user_info.get("id", "")), user_info
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to authenticate with {provider.value.title()}: {exc.response.status_code}",
+        )
 
 
 @router.get("/{provider}/callback", name="oauth_callback")
@@ -74,32 +108,7 @@ async def oauth_callback(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Invalid OAuth state")
 
     redirect_uri = str(request.url_for("oauth_callback", provider=provider.value))
-
-    if provider == OAuthProvider.google:
-        try:
-            token_data = await exchange_google_code(code, redirect_uri)
-        except httpx.HTTPStatusError:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Failed to exchange code with Google")
-
-        try:
-            user_info = await get_google_user_info(token_data["access_token"])
-        except httpx.HTTPStatusError:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Failed to fetch user info from Google")
-
-        provider_user_id: str = user_info.get("sub", "")
-
-    else:  # github
-        try:
-            token_data = await exchange_github_code(code, redirect_uri)
-        except httpx.HTTPStatusError:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Failed to exchange code with GitHub")
-
-        try:
-            user_info = await get_github_user_info(token_data["access_token"])
-        except httpx.HTTPStatusError:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Failed to fetch user info from GitHub")
-
-        provider_user_id = str(user_info.get("id", ""))
+    provider_user_id, user_info = await _fetch_provider_data(provider, code, redirect_uri)
 
     email: str | None = user_info.get("email")
     if not provider_user_id or not email:
@@ -111,16 +120,24 @@ async def oauth_callback(
     user = await _find_or_create_user(db, provider.value, provider_user_id, email, user_info)
     await db.commit()
 
-    access_token = create_access_token(user.id)
-    refresh_token = create_refresh_token(user.id)
-
-    frontend_redirect = (
-        f"{settings.FRONTEND_URL}/auth/callback"
-        f"?access_token={access_token}&refresh_token={refresh_token}"
-    )
+    exchange_code = create_exchange_code(user.id)
+    frontend_redirect = f"{settings.FRONTEND_URL}/auth/callback?code={exchange_code}"
     response = RedirectResponse(frontend_redirect)
     response.delete_cookie(_OAUTH_STATE_COOKIE)
     return response
+
+
+@router.post("/token/exchange", response_model=TokenResponse)
+async def exchange_token(body: ExchangeCodeRequest) -> TokenResponse:
+    """Exchange a short-lived OAuth exchange code for access + refresh tokens."""
+    try:
+        user_id = decode_exchange_code(body.code)
+    except JWTError:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Invalid or expired exchange code")
+    return TokenResponse(
+        access_token=create_access_token(user_id),
+        refresh_token=create_refresh_token(user_id),
+    )
 
 
 async def _unique_username(db: AsyncSession, user_info: dict) -> str:
@@ -135,7 +152,7 @@ async def _unique_username(db: AsyncSession, user_info: dict) -> str:
         candidate = f"{base[:25]}{i}"
         if not await crud_users.get_by_username(db, candidate):
             return candidate
-    return f"{base[:20]}{secrets.token_urlsafe(4)}"
+    return f"{base[:20]}{secrets.token_hex(4)}"
 
 
 async def _find_or_create_user(db: AsyncSession, provider: str, provider_user_id: str, email: str, user_info: dict):
